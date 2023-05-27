@@ -5,14 +5,16 @@ import time
 from .common import InfoExtractor
 from ..compat import compat_parse_qs
 from ..utils import (
+    IDENTITY,
     ExtractorError,
     determine_ext,
+    dict_get,
     get_element_by_class,
     int_or_none,
     lowercase_escape,
+    orderedSet,
     try_get,
     update_url_query,
-    dict_get,
 )
 
 
@@ -352,10 +354,28 @@ x-goog-authuser: 0
         auth = self._generate_sapisidhash_header('https://drive.google.com')
 
         folder_info = self._call_api(folder_id, key, self._DATA % (f'/drive/v2beta/files/{folder_id} HTTP/1.1', version, auth), fatal=False)
-
-        return self.playlist_from_matches(
+        return self.playlist_from_matches_dict(
             self._get_folder_items(folder_id, key, version), folder_id, folder_info.get('title'),
-            ie=GoogleDriveIE, getter=lambda item: f'https://drive.google.com/file/d/{item["id"]}')
+            ie=GoogleDriveIE, getter=lambda item: {
+                "url": f'https://drive.google.com/file/d/{item["id"]}',
+                "title": item['title'],
+                "filesize": item['fileSize']
+            }
+        )
+
+    @classmethod
+    def playlist_from_matches_dict(cls, matches, playlist_id=None, playlist_title=None,
+                              getter=IDENTITY, ie=None, video_kwargs=None, **kwargs):
+        """
+        Same as the normal playlist_from_matches(), but the `getter` returns a dict where the url
+        key is the same as the normal `getter`, and every other key get passed into video_kwargs
+        """
+        return cls.playlist_result(
+            (cls.url_result(
+                m['url'], ie, **(video_kwargs or {}),
+                **{key: value for key, value in m.items() if key != 'url'}
+                ) for m in orderedSet(map(getter, matches), lazy=True)),
+            playlist_id, playlist_title, **kwargs)
 
     def _generate_sapisidhash_header(self, origin='https://drive.google.com'):
         time_now = round(time.time())
