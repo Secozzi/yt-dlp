@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import time
 
@@ -343,7 +344,9 @@ x-goog-authuser: 0
             request = self._REQUEST.format(folder_id=folder_id, page_token=page_token, key=key)
             auth = self._generate_sapisidhash_header('https://drive.google.com')
             page = self._call_api(folder_id, key, self._DATA % (request, client_version, auth))
-            yield from page['items']
+
+            # Filter out non-videos
+            yield from [item for item in page['items'] if item['mimeType'][:5] == 'video']
             page_token = page.get('nextPageToken')
 
     def _real_extract(self, url):
