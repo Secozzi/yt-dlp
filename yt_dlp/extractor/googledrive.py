@@ -1,5 +1,4 @@
 import hashlib
-import json
 import re
 import time
 
@@ -12,7 +11,8 @@ from ..utils import (
     int_or_none,
     lowercase_escape,
     try_get,
-    update_url_query, dict_get,
+    update_url_query,
+    dict_get,
 )
 
 
@@ -177,7 +177,6 @@ class GoogleDriveIE(InfoExtractor):
         formats = []
         fmt_stream_map = (get_value('fmt_stream_map') or '').split(',')
         fmt_list = (get_value('fmt_list') or '').split(',')
-
         if fmt_stream_map and fmt_list:
             resolutions = {}
             for fmt in fmt_list:
@@ -240,20 +239,16 @@ class GoogleDriveIE(InfoExtractor):
                 confirmation_webpage = self._webpage_read_content(
                     urlh, url, video_id, note='Downloading confirmation page',
                     errnote='Unable to confirm download', fatal=False)
-
                 if confirmation_webpage:
                     confirm = self._search_regex(
                         r'confirm=([^&"\']+)', confirmation_webpage,
                         'confirmation code', default=None)
-
                     uuid = self._search_regex(
                         r'uuid=([^&"\']+)', confirmation_webpage,
                         'uuid', default=None)
-
                     at = self._search_regex(
                         r'at=([^&"\']+)', confirmation_webpage,
                         'at', default=None)
-
                     if confirm and uuid and at:
                         confirmed_source_url = update_url_query(source_url, {
                             'confirm': confirm,
@@ -261,7 +256,6 @@ class GoogleDriveIE(InfoExtractor):
                             "at": at
                         })
                         urlh = request_source_file(confirmed_source_url, 'confirmed source')
-
                         if urlh and urlh.headers.get('Content-Disposition'):
                             add_source_format(urlh)
                     else:
