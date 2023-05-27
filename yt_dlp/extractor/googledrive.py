@@ -1,4 +1,6 @@
+import hashlib
 import re
+import time
 
 from .common import InfoExtractor
 from ..compat import compat_parse_qs
@@ -9,7 +11,7 @@ from ..utils import (
     int_or_none,
     lowercase_escape,
     try_get,
-    update_url_query,
+    update_url_query, dict_get,
 )
 
 
@@ -174,6 +176,7 @@ class GoogleDriveIE(InfoExtractor):
         formats = []
         fmt_stream_map = (get_value('fmt_stream_map') or '').split(',')
         fmt_list = (get_value('fmt_list') or '').split(',')
+
         if fmt_stream_map and fmt_list:
             resolutions = {}
             for fmt in fmt_list:
@@ -236,15 +239,28 @@ class GoogleDriveIE(InfoExtractor):
                 confirmation_webpage = self._webpage_read_content(
                     urlh, url, video_id, note='Downloading confirmation page',
                     errnote='Unable to confirm download', fatal=False)
+
                 if confirmation_webpage:
                     confirm = self._search_regex(
                         r'confirm=([^&"\']+)', confirmation_webpage,
                         'confirmation code', default=None)
-                    if confirm:
+
+                    uuid = self._search_regex(
+                        r'uuid=([^&"\']+)', confirmation_webpage,
+                        'uuid', default=None)
+
+                    at = self._search_regex(
+                        r'at=([^&"\']+)', confirmation_webpage,
+                        'at', default=None)
+
+                    if confirm and uuid and at:
                         confirmed_source_url = update_url_query(source_url, {
                             'confirm': confirm,
+                            "uuid": uuid,
+                            "at": at
                         })
                         urlh = request_source_file(confirmed_source_url, 'confirmed source')
+
                         if urlh and urlh.headers.get('Content-Disposition'):
                             add_source_format(urlh)
                     else:
@@ -300,9 +316,13 @@ content-type: application/http
 content-transfer-encoding: binary
 
 GET %s
+X-Goog-Drive-Client-Version: %s
+authorization: %s
+x-goog-authuser: 0
 
 --{_BOUNDARY}
 '''
+    _SAPISID = None
 
     def _call_api(self, folder_id, key, data, **kwargs):
         response = self._download_webpage(
@@ -317,11 +337,12 @@ GET %s
             }, **kwargs)
         return self._search_json('', response, 'api response', folder_id, **kwargs) or {}
 
-    def _get_folder_items(self, folder_id, key):
+    def _get_folder_items(self, folder_id, key, client_version):
         page_token = ''
         while page_token is not None:
             request = self._REQUEST.format(folder_id=folder_id, page_token=page_token, key=key)
-            page = self._call_api(folder_id, key, self._DATA % request)
+            auth = self._generate_sapisidhash_header('https://drive.google.com')
+            page = self._call_api(folder_id, key, self._DATA % (request, client_version, auth))
             yield from page['items']
             page_token = page.get('nextPageToken')
 
@@ -330,9 +351,36 @@ GET %s
 
         webpage = self._download_webpage(url, folder_id)
         key = self._search_regex(r'"(\w{39})"', webpage, 'key')
+        version = self._search_regex(r'([^"]+web-frontend[^"]+)', webpage, 'version')
+        auth = self._generate_sapisidhash_header('https://drive.google.com')
 
-        folder_info = self._call_api(folder_id, key, self._DATA % f'/drive/v2beta/files/{folder_id} HTTP/1.1', fatal=False)
+        folder_info = self._call_api(folder_id, key, self._DATA % (f'/drive/v2beta/files/{folder_id} HTTP/1.1', version, auth), fatal=False)
 
         return self.playlist_from_matches(
-            self._get_folder_items(folder_id, key), folder_id, folder_info.get('title'),
+            self._get_folder_items(folder_id, key, version), folder_id, folder_info.get('title'),
             ie=GoogleDriveIE, getter=lambda item: f'https://drive.google.com/file/d/{item["id"]}')
+
+    def _generate_sapisidhash_header(self, origin='https://drive.google.com'):
+        time_now = round(time.time())
+        if self._SAPISID is None:
+            yt_cookies = self._get_cookies(origin)
+            # Sometimes SAPISID cookie isn't present but __Secure-3PAPISID is.
+            # See: https://github.com/yt-dlp/yt-dlp/issues/393
+            sapisid_cookie = dict_get(
+                yt_cookies, ('__Secure-3PAPISID', 'SAPISID'))
+            if sapisid_cookie and sapisid_cookie.value:
+                self._SAPISID = sapisid_cookie.value
+                self.write_debug('Extracted SAPISID cookie')
+                # SAPISID cookie is required if not already present
+                if not yt_cookies.get('SAPISID'):
+                    self.write_debug('Copying __Secure-3PAPISID cookie to SAPISID cookie')
+                    self._set_cookie(
+                        'drive.google.com', 'SAPISID', self._SAPISID, secure=True, expire_time=time_now + 3600)
+            else:
+                self._SAPISID = False
+        if not self._SAPISID:
+            return None
+        # SAPISIDHASH algorithm from https://stackoverflow.com/a/32065323
+        sapisidhash = hashlib.sha1(
+            f'{time_now} {self._SAPISID} {origin}'.encode()).hexdigest()
+        return f'SAPISIDHASH {time_now}_{sapisidhash}'
